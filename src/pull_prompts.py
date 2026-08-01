@@ -1,15 +1,16 @@
 """
-Script para fazer pull de prompts do LangSmith Prompt Hub.
+Script that pulls prompts from the LangSmith Prompt Hub.
 
-Este script:
-1. Conecta ao LangSmith usando credenciais do .env
-2. Faz pull dos prompts do Hub
-3. Salva localmente em prompts/bug_to_user_story_v1.yml
+This script:
+1. Connects to LangSmith using the credentials from .env
+2. Pulls the prompts from the Hub
+3. Saves them locally to prompts/bug_to_user_story_v1.yml
 
-SIMPLIFICADO: Usa serialização nativa do LangChain para extrair prompts.
+SIMPLIFIED: relies on LangChain's native serialization to extract the prompts.
 """
 
 import sys
+import yaml
 from datetime import datetime
 from dotenv import load_dotenv
 from langchain import hub
@@ -17,25 +18,35 @@ from utils import save_yaml, check_env_vars, print_section_header
 
 load_dotenv()
 
-# Prompt de baixa qualidade publicado no Hub (ponto de partida do desafio)
+
+def _represent_multiline_str(dumper, data):
+    """Dump multiline strings as literal blocks (|) so they stay readable."""
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+# save_yaml() uses PyYAML's default Dumper; registering here avoids touching utils.py
+yaml.add_representer(str, _represent_multiline_str)
+
+# Low-quality prompt published on the Hub (the challenge's starting point)
 HUB_PROMPT = "leonanluppi/bug_to_user_story_v1"
 
-# Onde o prompt será salvo localmente
+# Where the prompt is saved locally
 OUTPUT_FILE = "prompts/bug_to_user_story_v1.yml"
 
-# Chave raiz usada no YAML (mesmo nome do prompt, sem o owner)
+# Root key used in the YAML file (the prompt name, without the owner)
 PROMPT_KEY = "bug_to_user_story_v1"
 
 
 def _template_text(message) -> str:
     """
-    Extrai o texto do template de uma mensagem de um ChatPromptTemplate.
+    Extract the template text of a single ChatPromptTemplate message.
 
     Args:
-        message: Mensagem do prompt (template ou mensagem já materializada)
+        message: Prompt message (a template or an already-materialized message)
 
     Returns:
-        Texto do template da mensagem (string vazia se não houver)
+        The message's template text (empty string when there is none)
     """
     inner = getattr(message, "prompt", None)
 
@@ -51,13 +62,13 @@ def _template_text(message) -> str:
 
 def _role_of(message) -> str:
     """
-    Descobre o papel (system/user/assistant) de uma mensagem do prompt.
+    Determine the role (system/user/assistant) of a prompt message.
 
     Args:
-        message: Mensagem do prompt
+        message: Prompt message
 
     Returns:
-        'system', 'user', 'assistant' ou 'unknown'
+        'system', 'user', 'assistant' or 'unknown'
     """
     name = type(message).__name__.lower()
 
@@ -77,20 +88,20 @@ def _role_of(message) -> str:
 
 def extract_prompt_texts(prompt_template) -> dict:
     """
-    Extrai system_prompt e user_prompt de um template do LangChain.
+    Extract system_prompt and user_prompt from a LangChain template.
 
-    Suporta ChatPromptTemplate (múltiplas mensagens) e PromptTemplate simples.
+    Supports ChatPromptTemplate (multiple messages) and plain PromptTemplate.
 
     Args:
-        prompt_template: Objeto retornado por hub.pull()
+        prompt_template: Object returned by hub.pull()
 
     Returns:
-        Dicionário com as chaves 'system_prompt' e 'user_prompt'
+        Dictionary with the keys 'system_prompt' and 'user_prompt'
     """
     messages = getattr(prompt_template, "messages", None)
 
     if not messages:
-        # PromptTemplate simples: todo o conteúdo vira system_prompt
+        # Plain PromptTemplate: the whole content becomes the system_prompt
         return {
             "system_prompt": str(getattr(prompt_template, "template", "")).strip(),
             "user_prompt": "",
@@ -115,15 +126,15 @@ def extract_prompt_texts(prompt_template) -> dict:
 
 def fetch_hub_metadata(prompt_identifier: str) -> dict:
     """
-    Busca metadados do prompt no LangSmith (descrição, tags, datas).
+    Fetch the prompt's metadata from LangSmith (description, tags, dates).
 
-    Falhas aqui não são fatais: o pull do prompt em si é o que importa.
+    Failures here are not fatal: pulling the prompt itself is what matters.
 
     Args:
-        prompt_identifier: Identificador no formato 'owner/nome'
+        prompt_identifier: Identifier in the 'owner/name' format
 
     Returns:
-        Dicionário com metadados encontrados (vazio se indisponível)
+        Dictionary with the metadata found (empty when unavailable)
     """
     try:
         from langsmith import Client
@@ -149,15 +160,15 @@ def fetch_hub_metadata(prompt_identifier: str) -> dict:
 
 def build_prompt_yaml(prompt_template, prompt_identifier: str, metadata: dict) -> dict:
     """
-    Monta a estrutura YAML do prompt a partir do template e dos metadados.
+    Build the prompt's YAML structure from the template and its metadata.
 
     Args:
-        prompt_template: Objeto retornado por hub.pull()
-        prompt_identifier: Identificador no formato 'owner/nome'
-        metadata: Metadados obtidos do LangSmith
+        prompt_template: Object returned by hub.pull()
+        prompt_identifier: Identifier in the 'owner/name' format
+        metadata: Metadata retrieved from LangSmith
 
     Returns:
-        Dicionário pronto para ser salvo em YAML
+        Dictionary ready to be saved as YAML
     """
     texts = extract_prompt_texts(prompt_template)
     hub_metadata = getattr(prompt_template, "metadata", None) or {}
@@ -168,7 +179,7 @@ def build_prompt_yaml(prompt_template, prompt_identifier: str, metadata: dict) -
             or "Prompt para converter relatos de bugs em User Stories",
             "system_prompt": texts["system_prompt"] + "\n",
             "user_prompt": texts["user_prompt"],
-            # Metadados
+            # Metadata
             "version": "v1",
             "created_at": metadata.get("created_at") or "",
             "tags": metadata.get("tags")
@@ -187,10 +198,10 @@ def build_prompt_yaml(prompt_template, prompt_identifier: str, metadata: dict) -
 
 def pull_prompts_from_langsmith() -> bool:
     """
-    Faz pull do prompt do LangSmith Hub e salva localmente em YAML.
+    Pull the prompt from the LangSmith Hub and save it locally as YAML.
 
     Returns:
-        True se sucesso, False caso contrário
+        True on success, False otherwise
     """
     print(f"Puxando prompt do LangSmith Hub: {HUB_PROMPT}")
 
@@ -230,7 +241,7 @@ def pull_prompts_from_langsmith() -> bool:
 
 
 def main():
-    """Função principal"""
+    """Main entry point"""
     print_section_header("PULL DE PROMPTS DO LANGSMITH HUB")
 
     if not check_env_vars(["LANGSMITH_API_KEY"]):
